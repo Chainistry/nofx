@@ -428,6 +428,73 @@ func main() {
 
 	// write harness-style test in parent dir
 	pkgName := strings.ToLower(fd.Name.Name)
+
+	// Build a 'See:' navigation comment pointing to the implementation file and signature
+	relPath := funcFile
+	if rp, rerr := filepath.Rel(".", funcFile); rerr == nil {
+		relPath = rp
+	}
+	// assemble receiver string e.g. (s *Server)
+	recvStr := ""
+	if fd.Recv != nil && len(fd.Recv.List) > 0 {
+		recvField := fd.Recv.List[0]
+		recvName := "s"
+		if len(recvField.Names) > 0 {
+			recvName = recvField.Names[0].Name
+		}
+		// determine type name
+		switch rt := recvField.Type.(type) {
+		case *ast.StarExpr:
+			if id, ok := rt.X.(*ast.Ident); ok {
+				recvStr = "(" + recvName + " *" + id.Name + ")"
+			} else if se, ok := rt.X.(*ast.SelectorExpr); ok {
+				// selector like pkg.Type
+				if xid, ok := se.X.(*ast.Ident); ok {
+					recvStr = "(" + recvName + " *" + xid.Name + "." + se.Sel.Name + ")"
+				}
+			}
+		case *ast.Ident:
+			recvStr = "(" + recvName + " " + rt.Name + ")"
+		default:
+			// fallback
+			recvStr = "(s *Server)"
+		}
+	}
+	// assemble first parameter string e.g. (c *gin.Context)
+	paramStr := "(c *gin.Context)"
+	if fd.Type != nil && fd.Type.Params != nil && len(fd.Type.Params.List) > 0 {
+		p := fd.Type.Params.List[0]
+		pname := "c"
+		if len(p.Names) > 0 {
+			pname = p.Names[0].Name
+		}
+		s := ""
+		swit := p.Type
+		switch pt := swit.(type) {
+		case *ast.StarExpr:
+			if se, ok := pt.X.(*ast.SelectorExpr); ok {
+				if xid, ok := se.X.(*ast.Ident); ok {
+					s = "*" + xid.Name + "." + se.Sel.Name
+				}
+			} else if id, ok := pt.X.(*ast.Ident); ok {
+				s = "*" + id.Name
+			}
+		case *ast.SelectorExpr:
+			if xid, ok := pt.X.(*ast.Ident); ok {
+				s = xid.Name + "." + pt.Sel.Name
+			}
+		case *ast.Ident:
+			s = pt.Name
+		default:
+			s = "*gin.Context"
+		}
+		if s != "" {
+			paramStr = "(" + pname + " " + s + ")"
+		}
+	}
+	// write the See comment
+	fmt.Fprintf(f2, "// See: %s -> func %s %s\n", filepath.ToSlash(relPath), recvStr, fd.Name.Name+paramStr)
+
 	fmt.Fprintf(f2, "// @Target(%s)\n", fd.Name.Name)
 	fmt.Fprintf(f2, "package %s\n\n", pkgName)
 	fmt.Fprintln(f2, "import (")

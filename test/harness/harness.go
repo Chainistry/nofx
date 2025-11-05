@@ -20,6 +20,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"nofx/api"
+	"nofx/auth"
 	"nofx/config"
 	"nofx/manager"
 
@@ -47,6 +48,10 @@ func NewTestEnv(t *testing.T) *TestEnv {
 		t.Fatalf("NewDatabase failed: %v", err)
 	}
 
+	// set a deterministic JWT secret for tests and enable admin mode to avoid Authorization headers
+	auth.SetJWTSecret("test-jwt-secret")
+	auth.SetAdminMode(true)
+
 	// 创建TraderManager
 	traderMgr := manager.NewTraderManager()
 
@@ -65,6 +70,9 @@ func NewTestEnv(t *testing.T) *TestEnv {
 
 // Cleanup 关闭环境
 func (e *TestEnv) Cleanup() {
+	// reset admin mode
+	auth.SetAdminMode(false)
+
 	if e.APIServer != nil {
 		e.APIServer.Close()
 	}
@@ -561,8 +569,12 @@ func loadCSVToTable(db *sql.DB, csvPath, table string) error {
 		return err
 	}
 	defer f.Close()
-	r := csv.NewReader(f)
-	rows, err := r.ReadAll()
+	// Use flexible CSV parser that handles single-quoted fields containing commas
+	b, err := ioutil.ReadAll(f)
+	if err != nil {
+		return err
+	}
+	rows, err := parseFlexibleCSV(b)
 	if err != nil {
 		return err
 	}
@@ -690,8 +702,12 @@ func validateTableCSV(db *sql.DB, csvPath, table string) error {
 		return err
 	}
 	defer f.Close()
-	r := csv.NewReader(f)
-	recs, err := r.ReadAll()
+	// use flexible parser
+	b, err := ioutil.ReadAll(f)
+	if err != nil {
+		return err
+	}
+	recs, err := parseFlexibleCSV(b)
 	if err != nil {
 		return err
 	}
@@ -1246,4 +1262,28 @@ func ReportErrOnFailure(t *testing.T, ctx string, err error) error {
 		}
 	}
 	return err
+}
+
+// parseFlexibleCSV parses CSV bytes while normalizing single-quoted fields to double-quoted so
+// fields like 'BTCUSDT,ETHUSDT' are treated as single fields by encoding/csv.
+func parseFlexibleCSV(b []byte) ([][]string, error) {
+	// replace single-quoted fields '...'(no nested single quotes) with double-quoted "..."
+	// This helps encoding/csv handle commas inside single-quoted fields.
+	re := regexp.MustCompile(`'([^']*)'`)
+	norm := re.ReplaceAllStringFunc(string(b), func(s string) string {
+		// If the matched string already contains a double quote, leave it alone to avoid corrupting data
+		if strings.Contains(s, `"`) {
+			return s
+		}
+		// replace surrounding single quotes with double quotes
+		inner := s[1 : len(s)-1]
+		// escape any existing double quotes inside inner
+		inner = strings.ReplaceAll(inner, `"`, `"`)
+		return `"` + inner + `"`
+	})
+	r := csv.NewReader(strings.NewReader(norm))
+	r.LazyQuotes = true
+	r.TrimLeadingSpace = true
+	r.FieldsPerRecord = -1
+	return r.ReadAll()
 }
